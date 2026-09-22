@@ -15,6 +15,7 @@ from app.weave import (  # noqa: E402
     repeat_period_of_matrix,
     search_repair_plans,
     suggest_tie_up_flips,
+    threshold_profile,
     validate_design,
     _proper_divisors,
     _runs,
@@ -488,6 +489,86 @@ def test_best_alignment_dimension_mismatch():
     print("  ok: dimension mismatch raises DesignError")
 
 
+def test_threshold_profile_cyclic_wrap():
+    # 单列 1 1 0 1 1，cyclic 合并为长度 4 的经向浮长：
+    # 阈值 1..3 各 1 条经向违规，阈值 4 起零违规
+    threading = [0]
+    tie_up = [[1], [0]]
+    treadling = [0, 0, 1, 0, 0]
+    profile = threshold_profile(threading, tie_up, treadling, True, 4)
+    check(profile.max_float_limit == 4, "profile covers thresholds 1..4")
+    check([p.max_float for p in profile.points] == [1, 2, 3, 4],
+          "profile thresholds ascend 1..limit")
+    check([(p.warp_violations, p.weft_violations, p.total_violations)
+           for p in profile.points] == [(1, 0, 1), (1, 0, 1), (1, 0, 1), (0, 0, 0)],
+          "cyclic wrap float cleared at threshold 4")
+    check(profile.min_zero_violation_threshold == 4,
+          "min zero-violation threshold is 4")
+    # 上限内达不到零违规时为 None
+    short = threshold_profile(threading, tie_up, treadling, True, 2)
+    check(short.min_zero_violation_threshold is None
+          and all(p.total_violations == 1 for p in short.points),
+          "no zero-violation threshold within limit -> None")
+    # 非循环语义下同一设计为两段长度 2 的浮长：阈值 1 有 2 条违规，阈值 2 清零
+    plain = threshold_profile(threading, tie_up, treadling, False, 3)
+    check(plain.min_zero_violation_threshold == 2
+          and [p.total_violations for p in plain.points] == [2, 0, 0],
+          "non-cyclic semantics preserved per threshold")
+
+
+def test_threshold_profile_weft_direction():
+    # 第 0 纬纬纱连续浮过 3 根经纱：阈值 1、2 各 1 条纬向违规，阈值 3 清零
+    threading = [0, 0, 0]
+    tie_up = [[0], [1]]
+    treadling = [0, 1]
+    profile = threshold_profile(threading, tie_up, treadling, False, 3)
+    check([(p.warp_violations, p.weft_violations) for p in profile.points]
+          == [(0, 1), (0, 1), (0, 0)],
+          "weft-only float reported per threshold")
+    check(profile.min_zero_violation_threshold == 3,
+          "weft float cleared at threshold 3")
+
+
+def test_threshold_profile_matches_audit_and_validation():
+    # 随机设计：每档总数必须与同参数 audit_floats 的违规数一致，且单调不增
+    rng = random.Random(20260922)
+    for _ in range(30):
+        shafts = rng.randint(1, 4)
+        treadles = rng.randint(1, 4)
+        threading = [rng.randrange(shafts) for _ in range(rng.randint(1, 8))]
+        treadling = [rng.randrange(treadles) for _ in range(rng.randint(1, 8))]
+        tie_up = [[rng.randint(0, 1) for _ in range(shafts)]
+                  for _ in range(treadles)]
+        cyclic = rng.random() < 0.5
+        profile = threshold_profile(threading, tie_up, treadling, cyclic, 6)
+        totals = []
+        for point in profile.points:
+            _, violations = audit_floats(
+                threading, tie_up, treadling, point.max_float, cyclic
+            )
+            warp = sum(1 for v in violations if v.direction == "warp")
+            check(point.total_violations == len(violations)
+                  and point.warp_violations == warp
+                  and point.weft_violations == len(violations) - warp,
+                  "profile point matches full audit at the same threshold")
+            totals.append(point.total_violations)
+        check(totals == sorted(totals, reverse=True),
+              "violation counts are non-increasing in threshold")
+        if profile.min_zero_violation_threshold is not None:
+            t = profile.min_zero_violation_threshold
+            check(totals[t - 1] == 0 and (t == 1 or totals[t - 2] > 0),
+                  "min zero-violation threshold is the first zero point")
+
+    # 参数校验：非整数 / 越界的上限一律拒绝
+    for bad in (0, 65, -1, True, 2.5, "3"):
+        try:
+            threshold_profile([0], [[1]], [0], False, bad)
+            raise AssertionError(f"max_float_limit={bad!r} should be rejected")
+        except DesignError:
+            pass
+    print("  ok: threshold profile parameter validation")
+
+
 def test_validation():
     ok_cases = []
     # 维度不一致：绑综矩阵不是矩形
@@ -552,5 +633,8 @@ if __name__ == "__main__":
     test_best_alignment_mismatch_details()
     test_best_alignment_tie_break()
     test_best_alignment_dimension_mismatch()
+    test_threshold_profile_cyclic_wrap()
+    test_threshold_profile_weft_direction()
+    test_threshold_profile_matches_audit_and_validation()
     test_validation()
     print("all tests passed")

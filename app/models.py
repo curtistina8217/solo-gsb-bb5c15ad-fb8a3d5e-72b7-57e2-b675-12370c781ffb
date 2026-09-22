@@ -164,6 +164,33 @@ class ErrorOut(BaseModel):
     detail: str
 
 
+class ThresholdProfilePointOut(BaseModel):
+    """单档阈值下完整经纬浮长审计的违规汇总。"""
+
+    max_float: int = Field(..., description="本档允许的最大浮长阈值，超过即判违规")
+    warp_violations: int = Field(..., description="该阈值下的经向浮长违规数")
+    weft_violations: int = Field(..., description="该阈值下的纬向浮长违规数")
+    total_violations: int = Field(
+        ..., description="该阈值下的违规总数（经向 + 纬向）"
+    )
+
+
+class ThresholdProfileOut(BaseModel):
+    """阈值敏感性分析：1..max_float_limit 逐档重跑完整浮长审计的结果。"""
+
+    design_id: int = Field(..., description="被分析的设计 ID")
+    cyclic: bool = Field(..., description="逐档审计沿用的设计循环声明")
+    max_float: int = Field(..., description="设计入库时声明的最大浮长阈值")
+    max_float_limit: int = Field(..., description="本次逐档审计的阈值上限")
+    min_zero_violation_threshold: int | None = Field(
+        ...,
+        description="达到零违规的最小阈值；上限内无法达到零违规时为 null",
+    )
+    profile: list[ThresholdProfilePointOut] = Field(
+        ..., description="逐档审计结果，按阈值 1..max_float_limit 升序"
+    )
+
+
 class DesignCompareIn(BaseModel):
     """设计对齐比对请求。"""
 

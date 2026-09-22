@@ -6,7 +6,8 @@
 首尾跨边界的连续段。合法设计与审计结果入库，可按 ID 查询；维度不一致或
 索引越界的设计将被整份拒绝（HTTP 400，不入库）。此外可对已存设计做
 **最小循环单元分析**：基于交织矩阵在经、纬两方向求能无缝平铺整幅的最小
-正周期与循环单元。对超限设计，还可请求
+正周期与循环单元；以及**阈值敏感性分析**：在 1～上限内逐档重跑完整浮长
+审计，给出每档违规数与达到零违规的最小阈值。对超限设计，还可请求
 **单步绑综修复建议**：逐一翻转一个绑综单元重跑审计，给出违规减少的候选；
 以及**多步修复方案搜索**：在 1～3 次绑综翻转内搜索最终违规严格减少的方案
 （中间状态允许违规数不下降）。还可对两份已存设计做**对齐比对**：枚举第二份
@@ -91,6 +92,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `GET` | `/designs/{id}` | 按 ID 查询设计及其审计结果 |
 | `GET` | `/designs/{id}/audit` | 按设计 ID 单独查询审计结果 |
 | `GET` | `/designs/{id}/repeat-period` | 最小循环单元分析：基于交织矩阵求经纬最小正周期与循环单元 |
+| `GET` | `/designs/{id}/threshold-profile` | 阈值敏感性分析：1～上限逐档重跑完整浮长审计，给出每档违规数与最小零违规阈值 |
 | `POST` | `/designs/{id}/tie-up-suggestions` | 单步绑综修复建议：逐一翻转一个绑综单元重跑审计，返回违规减少的候选 |
 | `POST` | `/designs/{id}/repair-plans` | 多步绑综修复方案：1～3 次翻转内搜索最终违规严格减少的方案，支持 `max_changes`、`limit` |
 | `POST` | `/designs/{id}/compare` | 设计对齐比对：枚举第二份矩阵的经纬循环错位，返回最佳偏移、错位坐标与汇总 |
@@ -211,6 +213,72 @@ curl -s http://localhost:8000/designs/1/repeat-period
   "unit": [[1, 0, 1], [0, 1, 1], [1, 1, 0]],
   "strict_2d_repeat": false
 }
+```
+
+### 阈值敏感性分析
+
+`GET http://localhost:8000/designs/{id}/threshold-profile`：读取已入库设计，
+在 `1..max_float_limit` 内**逐档按原 `cyclic` 语义重跑完整经纬浮长审计**
+（与提交时相同的判定规则，交织矩阵只生成一次），返回每档阈值下的经向、
+纬向与总违规数，以及该设计**达到零违规的最小阈值**。接口只读计算，
+**不修改数据库**；设计不存在返回 404。
+
+查询参数：
+
+| 参数 | 范围 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `max_float_limit` | 1～64 | 原设计的 `max_float`（若超过 64 则按 64 封顶） | 逐档审计的阈值上限 |
+
+返回字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `design_id` | 被分析的设计 ID |
+| `cyclic` | 逐档审计沿用的设计循环声明 |
+| `max_float` | 设计入库时声明的最大浮长阈值 |
+| `max_float_limit` | 本次逐档审计的阈值上限 |
+| `min_zero_violation_threshold` | 达到零违规的最小阈值；上限内始终有违规时为 `null` |
+| `profile[]` | 逐档审计结果，按阈值 `1..max_float_limit` 升序 |
+
+`profile[]` 每档包含：`max_float`（本档阈值）、`warp_violations`（经向违规数）、
+`weft_violations`（纬向违规数）、`total_violations`（违规总数）。违规数随阈值
+单调不增，因此首个零违规档即最小零违规阈值。
+
+```bash
+# 缺省上限 = 原设计的 max_float
+curl -s http://localhost:8000/designs/1/threshold-profile
+
+# 显式指定上限 4
+curl -s 'http://localhost:8000/designs/1/threshold-profile?max_float_limit=4'
+```
+
+响应（200，循环设计存在跨边界合并后长度 4 的经向浮长时）：
+
+```json
+{
+  "design_id": 1,
+  "cyclic": true,
+  "max_float": 2,
+  "max_float_limit": 4,
+  "min_zero_violation_threshold": 4,
+  "profile": [
+    {"max_float": 1, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+    {"max_float": 2, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+    {"max_float": 3, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+    {"max_float": 4, "warp_violations": 0, "weft_violations": 0, "total_violations": 0}
+  ]
+}
+```
+
+上限内达不到零违规时 `min_zero_violation_threshold` 为 `null`：
+
+```json
+{"design_id": 1, "cyclic": true, "max_float": 2, "max_float_limit": 2,
+ "min_zero_violation_threshold": null,
+ "profile": [
+   {"max_float": 1, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+   {"max_float": 2, "warp_violations": 1, "weft_violations": 0, "total_violations": 1}
+ ]}
 ```
 
 ### 单步绑综修复建议
@@ -380,6 +448,28 @@ curl -s -X POST http://localhost:8000/designs/1/compare \
 {"detail": "threading[3]=9 out of range: valid shaft index is [0, 4)"}
 ```
 
+## 运行测试
+
+本地（需先 `pip install -r requirements.txt`）：
+
+```bash
+python3 tests/test_weave.py                  # 核心逻辑单元测试（无外部依赖）
+python3 tests/test_api_repeat_period.py      # repeat-period 接口集成测试
+python3 tests/test_api_threshold_profile.py  # threshold-profile 接口集成测试
+python3 tests/test_api_compare.py            # compare 接口集成测试
+```
+
+接口测试使用临时 SQLite 文件与 FastAPI TestClient，不需要启动服务，也不会
+触碰默认的 `data/weave.db`。也可通过 `pytest tests/` 一次性收集执行。
+
+容器内执行（复用已构建的镜像，挂载源码后运行）：
+
+```bash
+docker build -t weave-audit .
+docker run --rm -v "$PWD":/app -w /app weave-audit \
+  sh -c 'python3 tests/test_weave.py && python3 tests/test_api_threshold_profile.py'
+```
+
 ## 项目结构
 
 ```
@@ -389,9 +479,10 @@ app/
   db.py      # SQLite 持久层
   models.py  # Pydantic 请求/响应模型
 tests/
-  test_weave.py               # 核心逻辑单元测试：python3 tests/test_weave.py
-  test_api_repeat_period.py   # repeat-period 接口集成测试（TestClient，临时库）
-  test_api_compare.py         # compare 接口集成测试（TestClient，临时库）
+  test_weave.py                   # 核心逻辑单元测试：python3 tests/test_weave.py
+  test_api_repeat_period.py       # repeat-period 接口集成测试（TestClient，临时库）
+  test_api_threshold_profile.py   # threshold-profile 接口集成测试（TestClient，临时库）
+  test_api_compare.py             # compare 接口集成测试（TestClient，临时库）
 Dockerfile
 docker-compose.yml
 requirements.txt

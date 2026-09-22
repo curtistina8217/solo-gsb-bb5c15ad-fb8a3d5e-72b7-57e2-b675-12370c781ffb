@@ -17,6 +17,7 @@ from .models import (
     ErrorOut,
     RepeatPeriodOut,
     RepairPlanOut,
+    ThresholdProfileOut,
     TieUpSuggestionOut,
     Violation,
 )
@@ -142,6 +143,49 @@ def get_repeat_period(design_id: int) -> dict:
         stored["max_float"],
     )
     return period.to_dict()
+
+
+@app.get(
+    "/designs/{design_id}/threshold-profile",
+    response_model=ThresholdProfileOut,
+    responses={404: {"model": ErrorOut, "description": "设计不存在"}},
+    tags=["designs"],
+)
+def get_threshold_profile(
+    design_id: int,
+    max_float_limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=64,
+        description="逐档审计的阈值上限（1～64）；缺省取原设计的 max_float"
+        "（若超过 64 则按 64 封顶）",
+    ),
+) -> dict:
+    """阈值敏感性分析：读取已入库设计，在 1..max_float_limit 内逐档按原
+    cyclic 语义重跑完整经纬浮长审计，返回每档阈值、经向/纬向违规数、总数，
+    以及该设计达到零违规的最小阈值（上限内达不到则为 null）。接口只读
+    计算，不修改数据库；设计不存在返回 404。"""
+    stored = db.get_design(design_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"design {design_id} not found")
+    limit = (
+        max_float_limit
+        if max_float_limit is not None
+        else min(stored["max_float"], 64)
+    )
+    profile = weave.threshold_profile(
+        stored["threading"],
+        stored["tie_up"],
+        stored["treadling"],
+        stored["cyclic"],
+        limit,
+    )
+    return {
+        "design_id": design_id,
+        "cyclic": stored["cyclic"],
+        "max_float": stored["max_float"],
+        **profile.to_dict(),
+    }
 
 
 @app.post(

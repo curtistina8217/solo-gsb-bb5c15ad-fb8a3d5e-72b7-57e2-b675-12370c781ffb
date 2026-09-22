@@ -91,6 +91,32 @@ class Alignment:
 
 
 @dataclass
+class ThresholdProfilePoint:
+    max_float: int        # 本档允许的最大浮长阈值
+    warp_violations: int  # 该阈值下经向浮长违规数
+    weft_violations: int  # 该阈值下纬向浮长违规数
+    total_violations: int # 该阈值下违规总数（经向 + 纬向）
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ThresholdProfile:
+    max_float_limit: int                      # 逐档审计的阈值上限
+    min_zero_violation_threshold: int | None  # 达到零违规的最小阈值（上限内无则 None）
+    points: list[ThresholdProfilePoint]       # 逐档结果，阈值 1..max_float_limit 升序
+
+    def to_dict(self) -> dict:
+        return {
+            "max_float_limit": self.max_float_limit,
+            "min_zero_violation_threshold": self.min_zero_violation_threshold,
+            # 接口响应中逐档列表的字段名为 profile
+            "profile": [p.to_dict() for p in self.points],
+        }
+
+
+@dataclass
 class RepairPlanStep:
     step: int               # 第几步（从 1 开始）
     treadle: int            # 踏板索引（tie_up 行号）
@@ -348,6 +374,43 @@ def audit_floats(
     validate_design(threading, tie_up, treadling, max_float)
     matrix = build_interlacing(threading, tie_up, treadling)
     return matrix, violations_of_matrix(matrix, max_float, cyclic)
+
+
+def threshold_profile(
+    threading: list[int],
+    tie_up: list[list[int]],
+    treadling: list[int],
+    cyclic: bool,
+    max_float_limit: int,
+) -> ThresholdProfile:
+    """阈值敏感性分析：在 1..max_float_limit 内逐档重跑完整经纬浮长审计。
+
+    交织矩阵与阈值无关，只生成一次；每一档阈值都按原 cyclic 语义对矩阵做
+    完整的经向 + 纬向浮长审计（与 audit_floats 相同的判定规则），统计该档
+    的经向、纬向与总违规数。违规数随阈值单调不增，因此首个零违规档即
+    达到零违规的最小阈值；上限内始终有违规时 min_zero_violation_threshold
+    为 None。不修改传入的设计数据。
+    """
+    if not isinstance(max_float_limit, int) or isinstance(max_float_limit, bool):
+        raise DesignError("max_float_limit must be an integer")
+    if not 1 <= max_float_limit <= 64:
+        raise DesignError("max_float_limit must be within [1, 64]")
+
+    validate_design(threading, tie_up, treadling, max_float_limit)
+    matrix = build_interlacing(threading, tie_up, treadling)
+
+    points: list[ThresholdProfilePoint] = []
+    min_zero: int | None = None
+    for threshold in range(1, max_float_limit + 1):
+        violations = violations_of_matrix(matrix, threshold, cyclic)
+        warp = sum(1 for v in violations if v.direction == "warp")
+        weft = len(violations) - warp
+        if min_zero is None and not violations:
+            min_zero = threshold
+        points.append(
+            ThresholdProfilePoint(threshold, warp, weft, len(violations))
+        )
+    return ThresholdProfile(max_float_limit, min_zero, points)
 
 
 def suggest_tie_up_flips(
