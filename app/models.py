@@ -160,6 +160,35 @@ class RepeatPeriodOut(BaseModel):
     )
 
 
+class ThresholdProfileEntryOut(BaseModel):
+    """单档阈值下的完整浮长审计统计。"""
+
+    threshold: int = Field(
+        ..., description="该档的 max_float 阈值（浮长超过它即判违规）"
+    )
+    warp_violations: int = Field(..., description="该档阈值下的经向浮长违规数")
+    weft_violations: int = Field(..., description="该档阈值下的纬向浮长违规数")
+    total_violations: int = Field(
+        ..., description="该档阈值下的违规总数（经向 + 纬向）"
+    )
+
+
+class ThresholdProfileOut(BaseModel):
+    """阈值敏感性分析：1..max_float_limit 逐档重跑完整浮长审计的结果。"""
+
+    design_id: int = Field(..., description="被分析的设计 ID")
+    cyclic: bool = Field(
+        ..., description="原设计的循环声明；逐档审计沿用同一 cyclic 语义"
+    )
+    max_float_limit: int = Field(..., description="本次逐档审计的阈值上限（1～64）")
+    entries: list[ThresholdProfileEntryOut] = Field(
+        ..., description="逐档统计，按阈值 1..max_float_limit 升序"
+    )
+    min_zero_violation_threshold: int | None = Field(
+        ..., description="该设计达到零违规的最小阈值；1..上限内未达零违规则为 null"
+    )
+
+
 class ErrorOut(BaseModel):
     detail: str
 

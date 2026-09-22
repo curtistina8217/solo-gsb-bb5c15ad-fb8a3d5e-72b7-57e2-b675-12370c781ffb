@@ -123,6 +123,29 @@ class RepairPlan:
         }
 
 
+@dataclass
+class ThresholdProfileEntry:
+    threshold: int        # 该档的 max_float 阈值（浮长超过它即判违规）
+    warp_violations: int  # 该档阈值下的经向浮长违规数
+    weft_violations: int  # 该档阈值下的纬向浮长违规数
+    total_violations: int  # 该档阈值下的违规总数（经向 + 纬向）
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ThresholdProfile:
+    entries: list[ThresholdProfileEntry]      # 逐档统计，按阈值 1..上限升序
+    min_zero_violation_threshold: int | None  # 达到零违规的最小阈值；范围内未达到为 None
+
+    def to_dict(self) -> dict:
+        return {
+            "entries": [e.to_dict() for e in self.entries],
+            "min_zero_violation_threshold": self.min_zero_violation_threshold,
+        }
+
+
 def _check_int(value, what: str) -> None:
     # bool 是 int 的子类，单独排除，避免 True/False 被当成合法索引
     if not isinstance(value, int) or isinstance(value, bool):
@@ -348,6 +371,41 @@ def audit_floats(
     validate_design(threading, tie_up, treadling, max_float)
     matrix = build_interlacing(threading, tie_up, treadling)
     return matrix, violations_of_matrix(matrix, max_float, cyclic)
+
+
+def threshold_profile(
+    threading: list[int],
+    tie_up: list[list[int]],
+    treadling: list[int],
+    cyclic: bool,
+    max_float_limit: int,
+) -> ThresholdProfile:
+    """阈值敏感性分析：在 1..max_float_limit 内逐档重跑完整经纬浮长审计。
+
+    交织矩阵只生成一次（与阈值无关），每一档阈值都按原 cyclic 语义调用
+    violations_of_matrix 做完整的经向 + 纬向浮长审计，统计该档下的经向、
+    纬向与总违规数。min_zero_violation_threshold 为达到零违规的最小阈值；
+    1..上限内始终存在违规时为 None。不修改传入参数。
+    """
+    if not isinstance(max_float_limit, int) or isinstance(max_float_limit, bool):
+        raise DesignError("max_float_limit must be an integer")
+    if not 1 <= max_float_limit <= 64:
+        raise DesignError("max_float_limit must be within [1, 64]")
+
+    # max_float_limit 本身即合法 max_float（>= 1），复用同一入口校验设计
+    validate_design(threading, tie_up, treadling, max_float_limit)
+    matrix = build_interlacing(threading, tie_up, treadling)
+
+    entries: list[ThresholdProfileEntry] = []
+    min_zero: int | None = None
+    for threshold in range(1, max_float_limit + 1):
+        violations = violations_of_matrix(matrix, threshold, cyclic)
+        warp = sum(1 for v in violations if v.direction == "warp")
+        total = len(violations)
+        entries.append(ThresholdProfileEntry(threshold, warp, total - warp, total))
+        if min_zero is None and total == 0:
+            min_zero = threshold
+    return ThresholdProfile(entries, min_zero)
 
 
 def suggest_tie_up_flips(

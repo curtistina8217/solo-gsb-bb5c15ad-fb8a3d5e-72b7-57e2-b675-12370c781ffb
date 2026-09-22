@@ -11,7 +11,9 @@
 以及**多步修复方案搜索**：在 1～3 次绑综翻转内搜索最终违规严格减少的方案
 （中间状态允许违规数不下降）。还可对两份已存设计做**对齐比对**：枚举第二份
 交织矩阵在经、纬方向的所有循环错位，给出不一致单元最少的最佳对齐、错位
-坐标与按行/列汇总。
+坐标与按行/列汇总。此外支持**阈值敏感性分析**：对已存设计在 1..上限内
+逐档重跑完整浮长审计，给出每档阈值的经/纬向违规统计与达到零违规的最小
+阈值。
 
 ## 快速启动
 
@@ -91,6 +93,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `GET` | `/designs/{id}` | 按 ID 查询设计及其审计结果 |
 | `GET` | `/designs/{id}/audit` | 按设计 ID 单独查询审计结果 |
 | `GET` | `/designs/{id}/repeat-period` | 最小循环单元分析：基于交织矩阵求经纬最小正周期与循环单元 |
+| `GET` | `/designs/{id}/threshold-profile` | 阈值敏感性分析：1..上限逐档重跑完整浮长审计，返回逐档违规统计与最小零违规阈值 |
 | `POST` | `/designs/{id}/tie-up-suggestions` | 单步绑综修复建议：逐一翻转一个绑综单元重跑审计，返回违规减少的候选 |
 | `POST` | `/designs/{id}/repair-plans` | 多步绑综修复方案：1～3 次翻转内搜索最终违规严格减少的方案，支持 `max_changes`、`limit` |
 | `POST` | `/designs/{id}/compare` | 设计对齐比对：枚举第二份矩阵的经纬循环错位，返回最佳偏移、错位坐标与汇总 |
@@ -212,6 +215,57 @@ curl -s http://localhost:8000/designs/1/repeat-period
   "strict_2d_repeat": false
 }
 ```
+
+### 阈值敏感性分析
+
+`GET http://localhost:8000/designs/{id}/threshold-profile`：读取已入库设计，
+在 `1..max_float_limit` 内**逐档重跑完整经纬浮长审计**（交织矩阵只生成一次，
+每档按原 `cyclic` 语义统计经向 + 纬向浮长违规），返回每档阈值下的违规统计，
+以及该设计**达到零违规的最小阈值**。接口只读计算，**不修改数据库**；设计不
+存在返回 404。
+
+查询参数：
+
+| 参数 | 范围 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `max_float_limit` | 1～64 | 原设计的 `max_float`（若超过 64 则按 64 截断） | 逐档审计的阈值上限 |
+
+返回字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `design_id` | 被分析的设计 ID |
+| `cyclic` | 原设计的循环声明；逐档审计沿用同一 cyclic 语义 |
+| `max_float_limit` | 本次逐档审计的阈值上限 |
+| `entries[]` | 逐档统计（按阈值 1..上限升序）：`threshold`、`warp_violations`、`weft_violations`、`total_violations` |
+| `min_zero_violation_threshold` | 达到零违规的最小阈值；1..上限内未达零违规则为 `null` |
+
+```bash
+# 默认上限 = 原设计 max_float
+curl -s http://localhost:8000/designs/2/threshold-profile
+
+# 显式指定上限
+curl -s 'http://localhost:8000/designs/2/threshold-profile?max_float_limit=4'
+```
+
+响应（200，跨边界合并出长度 4 经向浮长的循环设计示例）：
+
+```json
+{
+  "design_id": 2,
+  "cyclic": true,
+  "max_float_limit": 4,
+  "entries": [
+    {"threshold": 1, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+    {"threshold": 2, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+    {"threshold": 3, "warp_violations": 1, "weft_violations": 0, "total_violations": 1},
+    {"threshold": 4, "warp_violations": 0, "weft_violations": 0, "total_violations": 0}
+  ],
+  "min_zero_violation_threshold": 4
+}
+```
+
+`max_float_limit` 越界（< 1 或 > 64）返回 422。
 
 ### 单步绑综修复建议
 
@@ -389,9 +443,10 @@ app/
   db.py      # SQLite 持久层
   models.py  # Pydantic 请求/响应模型
 tests/
-  test_weave.py               # 核心逻辑单元测试：python3 tests/test_weave.py
-  test_api_repeat_period.py   # repeat-period 接口集成测试（TestClient，临时库）
-  test_api_compare.py         # compare 接口集成测试（TestClient，临时库）
+  test_weave.py                  # 核心逻辑单元测试：python3 tests/test_weave.py
+  test_api_repeat_period.py      # repeat-period 接口集成测试（TestClient，临时库）
+  test_api_compare.py            # compare 接口集成测试（TestClient，临时库）
+  test_api_threshold_profile.py  # threshold-profile 接口集成测试（TestClient，临时库）
 Dockerfile
 docker-compose.yml
 requirements.txt
